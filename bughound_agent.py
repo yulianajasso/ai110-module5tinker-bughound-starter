@@ -89,7 +89,26 @@ class BugHoundAgent:
             self._log("ANALYZE", "LLM output was not parseable JSON. Falling back to heuristics.")
             return self._heuristic_analyze(code_snippet)
 
-        return issues
+        # Enforce the contract the analyzer prompt asks for: each issue needs a
+        # recognized severity and a non-empty message. Anything else is dropped.
+        valid_issues = [i for i in issues if self._is_valid_issue(i)]
+
+        if issues and not valid_issues:
+            # The model returned issues, but none met the contract. Treat the
+            # output as untrustworthy rather than surfacing malformed findings.
+            self._log(
+                "ANALYZE",
+                f"LLM returned {len(issues)} issue(s) but none were valid. Falling back to heuristics.",
+            )
+            return self._heuristic_analyze(code_snippet)
+
+        if len(valid_issues) < len(issues):
+            self._log(
+                "ANALYZE",
+                f"Dropped {len(issues) - len(valid_issues)} malformed issue(s) from LLM output.",
+            )
+
+        return valid_issues
 
     def propose_fix(self, code_snippet: str, issues: List[Dict[str, str]]) -> str:
         if not issues:
@@ -186,6 +205,15 @@ class BugHoundAgent:
                 return self._normalize_issues(parsed2)
 
         return None
+
+    _VALID_SEVERITIES = {"low", "medium", "high"}
+
+    def _is_valid_issue(self, issue: Dict[str, str]) -> bool:
+        """An issue is trustworthy only if it meets the analyzer prompt's contract:
+        a recognized severity and a non-empty message."""
+        severity = str(issue.get("severity", "")).strip().lower()
+        msg = str(issue.get("msg", "")).strip()
+        return severity in self._VALID_SEVERITIES and bool(msg)
 
     def _normalize_issues(self, arr: List[Any]) -> List[Dict[str, str]]:
         issues: List[Dict[str, str]] = []

@@ -36,6 +36,41 @@ def test_high_severity_issue_drives_score_down():
     assert risk["level"] in ("medium", "high")
 
 
+def test_over_editing_blocks_autofix():
+    # Guardrail: even for a Low-severity issue, a fix that rewrites most of the
+    # lines is over-editing and must NOT auto-apply. Without the churn check this
+    # scores 95/low/autofix=True; with it, the heavy rewrite is caught.
+    original = "def add(a, b):\n    total = a + b\n    return total\n"
+    heavily_rewritten = (
+        "def add(x, y):\n"
+        "    result = compute_sum(x, y)\n"
+        "    log_result(result)\n"
+        "    return result\n"
+    )
+    risk = assess_risk(
+        original_code=original,
+        fixed_code=heavily_rewritten,
+        issues=[{"type": "Code Quality", "severity": "Low", "msg": "style"}],
+    )
+    # The decision: do not auto-apply a near-total rewrite.
+    assert risk["should_autofix"] is False
+    assert risk["level"] != "low"
+    assert any("over-editing" in r.lower() for r in risk["reasons"])
+
+
+def test_minimal_edit_still_allows_autofix():
+    # Counter-case: a small, targeted edit for a Low-severity issue should still
+    # be trusted, so the guardrail doesn't make BugHound refuse all action.
+    original = "def add(a, b):\n    total = a + b\n    return total\n"
+    minimal = "def add(a, b):\n    total = a + b  # sum\n    return total\n"
+    risk = assess_risk(
+        original_code=original,
+        fixed_code=minimal,
+        issues=[{"type": "Code Quality", "severity": "Low", "msg": "style"}],
+    )
+    assert risk["should_autofix"] is True
+
+
 def test_missing_return_is_penalized():
     original = "def f(x):\n    return x + 1\n"
     fixed = "def f(x):\n    x + 1\n"

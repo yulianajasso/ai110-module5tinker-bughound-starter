@@ -1,3 +1,4 @@
+import difflib
 from typing import Dict, List
 
 
@@ -63,6 +64,22 @@ def assess_risk(
         reasons.append("Bare except was modified, verify correctness.")
 
     # ----------------------------
+    # Over-editing check
+    # ----------------------------
+    # The existing rules only catch a fix that is much *shorter*. A fix that
+    # keeps a similar line count but rewrites most of the lines is still a
+    # high-risk change (the agent did far more than the issues warranted).
+    # Measure how much of the code churned and penalize heavy rewrites.
+    if original_lines:
+        similarity = difflib.SequenceMatcher(None, original_lines, fixed_lines).ratio()
+        changed_fraction = 1.0 - similarity
+        if changed_fraction > 0.6:
+            score -= 30
+            reasons.append(
+                f"Fix rewrote {round(changed_fraction * 100)}% of the code (possible over-editing)."
+            )
+
+    # ----------------------------
     # Clamp score
     # ----------------------------
     score = max(0, min(100, score))
@@ -80,7 +97,19 @@ def assess_risk(
     # ----------------------------
     # Auto-fix policy
     # ----------------------------
-    should_autofix = level == "low"
+    # Low overall risk is necessary but not sufficient. A single Medium severity
+    # issue only costs 20 points, so it still lands at "low" (score 80) and would
+    # auto-apply today. Tighten the policy: only auto-apply when every issue is
+    # Low severity (or there are none). Anything Medium or higher defers to a
+    # human, because those changes are the more costly ones to get wrong.
+    max_severity_ok = all(
+        str(issue.get("severity", "")).lower() in ("low", "", "unknown")
+        for issue in issues
+    )
+    should_autofix = level == "low" and max_severity_ok
+
+    if not max_severity_ok:
+        reasons.append("A Medium or High severity issue is present; deferring to human review before auto-apply.")
 
     if not reasons:
         reasons.append("No significant risks detected.")
